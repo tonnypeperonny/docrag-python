@@ -1,0 +1,14 @@
+{"question": "which days can I work from home", "expected_file": "remote-work-policy.md", "kind": "paraphrase"}
+{"question": "what is the home office budget", "expected_file": "remote-work-policy.md", "kind": "keyword"}
+{"question": "what are the core hours", "expected_file": "remote-work-policy.md", "kind": "keyword"}
+{"question": "do I need a VPN when working remotely", "expected_file": "remote-work-policy.md", "kind": "keyword"}
+{"question": "can I take a client video call from a cafe", "expected_file": "remote-work-policy.md", "kind": "paraphrase"}
+{"question": "does the training budget roll over to next year", "expected_file": "expenses-policy.md", "kind": "keyword"}
+{"question": "what is the maximum I can spend on a meal with a client", "expected_file": "expenses-policy.md", "kind": "paraphrase"}
+{"question": "how long do I have to hand in a receipt", "expected_file": "expenses-policy.md", "kind": "paraphrase"}
+{"question": "which purchases need pre-approval", "expected_file": "expenses-policy.md", "kind": "keyword"}
+{"question": "when will I get my money back for a business trip", "expected_file": "expenses-policy.md", "kind": "paraphrase"}
+{"question": "what messaging technology does Project Atlas use", "expected_file": "project-atlas-brief.md", "kind": "keyword"}
+{"question": "what happens in phase 2 of Atlas", "expected_file": "project-atlas-brief.md", "kind": "keyword"}
+{"question": "who maintains the ADRs", "expected_file": "project-atlas-brief.md", "kind": "keyword"}
+{"question": "what is the target latency for billing after the migration", "expected_file": "project-atlas-brief.md", "kind": "paraphrase"}
