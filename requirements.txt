@@ -1,5 +1,4 @@
 ﻿elasticsearch
 sentence-transformers
-anthropic
 requests
 

@@ -1,28 +1,18 @@
-"""Grounded answer generation with a LOCAL model via Ollama.
+"""Grounded answer generation with a local model via Ollama.
 
-Ollama (https://ollama.com) runs open-weight models (Llama, Qwen, Mistral...)
-on your own GPU/CPU and exposes a small HTTP API on http://localhost:11434.
-No API key, no cost per request, nothing leaves your machine.
-
-Same contract as answer_service.py (Claude): takes the retrieved chunks,
-returns a cited answer. Two RAG-relevant differences you will notice:
-
-1. Quality: a 3B local model follows the "cite your sources, don't invent"
-   instruction less reliably than a frontier model. Try a stronger local
-   model (`ollama pull qwen2.5:7b`) and compare — great interview talking
-   point about the quality/cost/privacy tradeoff in RAG systems.
-2. Latency: first call is slow (model loads into VRAM), then it stays warm.
+The retrieved chunks are passed as numbered sources; the system prompt
+confines the model to those sources and requires citations — that
+combination is what makes this RAG rather than "ask an LLM and hope".
+Served by an open-weight model on http://localhost:11434: no API key,
+no cost per request, nothing leaves the machine.
 """
 
 import os
 
-import requests  # the de-facto standard HTTP library (like HttpClient in .NET)
+import requests
 
 from search_index import ScoredChunk
 
-# os.environ.get(key, default) — like Environment.GetEnvironmentVariable
-# with a fallback. Lets you switch models without touching code:
-#   $env:DOCRAG_LLM_MODEL = "qwen2.5:7b"
 OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://localhost:11434")
 MODEL = os.environ.get("DOCRAG_LLM_MODEL", "llama3.2:3b")
 
@@ -40,10 +30,6 @@ class OllamaAnswerService:
             for i, chunk in enumerate(context, start=1)
         )
 
-        # Ollama's /api/chat mirrors the shape most chat APIs use:
-        # a list of {role, content} messages. `stream: False` means
-        # "give me the whole answer in one JSON response" instead of
-        # token-by-token server-sent events.
         response = requests.post(
             f"{OLLAMA_URL}/api/chat",
             json={
@@ -57,9 +43,8 @@ class OllamaAnswerService:
                     },
                 ],
             },
-            timeout=300,  # first call loads the model into VRAM — be patient
+            timeout=300,  # first call loads the model into VRAM
         )
-        response.raise_for_status()  # turn HTTP 4xx/5xx into an exception
+        response.raise_for_status()
 
-        # .json() parses the response body; the answer lives at message.content
         return response.json()["message"]["content"]

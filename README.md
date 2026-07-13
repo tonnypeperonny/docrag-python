@@ -1,22 +1,28 @@
 # DocRag (Python version)
 
-Same project as the .NET version in `D:\proj\docrag-dotnet` — hybrid semantic
-search + RAG over local documents — rebuilt in Python for learning. Every file
-mirrors a C# file and is heavily commented with the Python-vs-C# differences.
+Hybrid semantic search + RAG over local documents — Python port of the .NET
+version in `D:\proj\docrag-dotnet`. Both share the same pipeline:
 
-| Python | C# | What it does |
-|---|---|---|
-| `chunker.py` | `Chunker.cs` | Paragraph-aware splitting with overlap |
-| `embedding_service.py` | `EmbeddingService.cs` | all-MiniLM-L6-v2 embeddings |
-| `search_index.py` | `SearchIndex.cs` | ES index, bulk ingest, BM25 + kNN + RRF |
-| `answer_service.py` | `AnswerService.cs` | Claude grounded answering |
-| `ollama_service.py` | `OllamaAnswerService.cs` | Local-model answering via Ollama (keyless) |
-| `main.py` | `Program.cs` | CLI entry point |
+    ingest:  files -> chunker -> MiniLM embeddings -> Elasticsearch
+    search:  BM25 + kNN in parallel -> Reciprocal Rank Fusion -> top chunks
+    ask:     top chunks + question -> local LLM via Ollama -> cited answer
+
+Fully local: embeddings, search, and answering all run on this machine —
+no API keys, nothing leaves the box.
+
+| Module | What it does |
+|---|---|
+| `chunker.py` | Paragraph-aware splitting with overlap |
+| `embedding_service.py` | all-MiniLM-L6-v2 embeddings (384 dims) |
+| `search_index.py` | ES index, bulk ingest, BM25 + kNN + RRF |
+| `ollama_service.py` | Grounded answering via a local model on Ollama |
+| `eval_retrieval.py` + `evalset.jsonl` | Retrieval quality eval (hit@k, MRR) |
+| `main.py` | CLI entry point |
 
 ## Setup & usage
 
 ```powershell
-python -m venv .venv                      # venv ≈ per-project packages (like a local NuGet cache)
+python -m venv .venv
 .\.venv\Scripts\pip install -r requirements.txt
 
 .\.venv\Scripts\python main.py ingest sample-docs
@@ -24,41 +30,23 @@ python -m venv .venv                      # venv ≈ per-project packages (like 
 .\.venv\Scripts\python main.py ask what is the training budget
 ```
 
-`ask` uses Claude when `ANTHROPIC_API_KEY` is set, otherwise a free local model
-via [Ollama](https://ollama.com) (`ollama pull llama3.2:3b` once). Override with
-`DOCRAG_LLM=claude|ollama`; pick the local model with `DOCRAG_LLM_MODEL`.
+`ask` answers with a local model via [Ollama](https://ollama.com)
+(`ollama pull llama3.2:3b` once). Pick the model with `DOCRAG_LLM_MODEL`.
 
 Needs the same Elasticsearch container as the .NET version (`docrag-es` on :9200).
-Uses its own index (`doc-chunks-py`) so both versions coexist.
+Uses its own index (`doc-chunks-py`) so both versions coexist — same model and
+same algorithm, so both produce identical rankings for the same query.
 
-## The interesting differences (.NET vs Python)
+## Experimenting
 
-1. **Embeddings: 80 lines vs 3.** C# hand-rolls the pipeline (WordPiece tokenizer,
-   ONNX forward pass, mean pooling, L2 normalize) because .NET has no
-   sentence-transformers equivalent. Python: `SentenceTransformer(...).encode(text)`.
-   This is Python's real advantage in ML — the ecosystem, not the language.
+Retrieval is tunable per run: `--mode hybrid|bm25|knn` and `--top N` on
+`search`/`ask`, `--chunk N` and `--no-overlap` on `ingest`. `eval` scores all
+modes against the labelled questions in `evalset.jsonl` (hit@k and MRR, split
+into keyword vs paraphrase questions):
 
-2. **Typed client vs raw dicts.** The C# Elasticsearch client builds queries with
-   typed descriptors — the compiler catches a wrong field name. The Python client
-   takes plain dicts that map 1:1 to the ES JSON API — nothing is checked until
-   the server rejects it. Flexibility vs safety; you'll meet this tradeoff all
-   over Python.
+```powershell
+.\.venv\Scripts\python main.py eval
+.\.venv\Scripts\python main.py search --mode knn when will I get my money back
+```
 
-3. **Model distribution.** .NET needed a download script for the ONNX file;
-   sentence-transformers auto-downloads to `~/.cache/huggingface` on first use.
-
-4. **Language mappings you'll keep using:**
-   | C# | Python |
-   |---|---|
-   | `record` | `@dataclass(frozen=True)` |
-   | LINQ (`Select`/`Where`) | list comprehensions / generator expressions |
-   | `yield return` iterator | generator function (`yield`) |
-   | `switch` expression | `match` statement |
-   | `$"..."` interpolation | f-strings `f"..."` |
-   | `string.Join(sep, xs)` | `sep.join(xs)` |
-   | `buffer[^1]` | `buffer[-1]` |
-   | `private` field | `_underscore` naming convention (not enforced) |
-   | `Main()` | `if __name__ == "__main__":` |
-
-5. **Same output.** Both versions produce identical rankings and RRF scores for
-   the same query — same model, same algorithm, different language.
+Scenarios and results are tracked in [EXPERIMENTS.md](EXPERIMENTS.md).
