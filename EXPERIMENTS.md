@@ -113,9 +113,16 @@ Notes:
 - llama3.2:3b: correct answer ("above 1,000 PLN, department head"), named
   the source file and cited [1]. On these short, unambiguous policy
   questions the 3B model has been reliable so far — no hallucination
-  observed yet. Needs harder questions (multi-source, answer-not-present)
-  to expose the difference.
-- qwen2.5:7b: not pulled yet.
+  observed yet.
+- qwen2.5:7b: also correct and cited; noticeably more concise (one sentence
+  vs llama's restated bullet lists on other questions).
+- Answer-not-present test ("what is the parental leave policy" — not in any
+  doc): BOTH models correctly said the sources don't contain it, no
+  invention. llama padded with a summary of what the sources do cover; qwen
+  answered in one line.
+- Verdict so far: on this small, clean corpus the 3B model is not the weak
+  link — retrieval quality dominates. Revisit after adding distractor docs
+  and multi-source questions; that's where the 7B should separate.
 
 ## Backlog / ideas
 
