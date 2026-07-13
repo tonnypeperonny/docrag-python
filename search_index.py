@@ -1,15 +1,4 @@
-"""Elasticsearch access: index lifecycle, bulk ingestion, hybrid retrieval.
-
-Mirrors SearchIndex.cs. The interesting difference from .NET:
-
-- The .NET client (Elastic.Clients.Elasticsearch) is *strongly typed* — index
-  mappings and queries are built with typed descriptors and lambdas, and the
-  compiler catches a wrong field name.
-- The Python client is *dict-based* — you write the raw Elasticsearch JSON
-  API as Python dictionaries. Nothing is checked until Elasticsearch itself
-  rejects the request. More flexible, less safe: a classic tradeoff you'll
-  see everywhere in Python.
-"""
+"""Elasticsearch access: index lifecycle, bulk ingestion, hybrid retrieval."""
 
 from dataclasses import dataclass
 
@@ -21,10 +10,14 @@ from embedding_service import DIMENSIONS, EmbeddingService
 INDEX_NAME = "doc-chunks-py"  # separate index so the .NET version's data survives
 RRF_K = 60                    # standard dampening constant for Reciprocal Rank Fusion
 
+# Retrieval modes, selectable per query so the branches can be compared in
+# isolation: does hybrid actually beat either branch alone on our docs?
+MODES = ("hybrid", "bm25", "knn")
+
 
 @dataclass(frozen=True)
 class ScoredChunk:
-    """A retrieved chunk plus its fused relevance score."""
+    """A retrieved chunk plus its relevance score."""
     source_file: str
     ordinal: int
     content: str
@@ -38,13 +31,8 @@ class SearchIndex:
 
     def recreate(self) -> None:
         """Drop and re-create the index with the right mapping."""
-        # ignore_unavailable: don't error if the index doesn't exist yet —
-        # like `DeleteAsync` guarded by an Exists check in the .NET version.
         self._client.indices.delete(index=INDEX_NAME, ignore_unavailable=True)
 
-        # The mapping as a plain dict — compare with the typed
-        # .Properties<DocChunk>(p => p.Text(...).DenseVector(...)) in C#.
-        # This IS the JSON you'd send with curl; Python dicts map 1:1 to JSON.
         self._client.indices.create(
             index=INDEX_NAME,
             mappings={
@@ -62,38 +50,32 @@ class SearchIndex:
         )
 
     def index(self, chunks: list[tuple[Chunk, list[float]]]) -> None:
-        """Bulk-index (chunk, embedding) pairs.
-
-        `helpers.bulk` is the Python client's convenience wrapper over the
-        _bulk API — the counterpart of .NET's BulkAsync + IndexMany.
-        """
-        # A generator expression feeding bulk actions — each dict is one
-        # document. "_id" makes ingestion idempotent (re-running ingest
-        # overwrites instead of duplicating), same as op.Id(doc.Id) in C#.
+        """Bulk-index (chunk, embedding) pairs."""
+        # "_id" makes ingestion idempotent: re-running ingest overwrites
+        # instead of duplicating.
         helpers.bulk(
             self._client,
             (
                 {
                     "_index": INDEX_NAME,
-                    "_id": f"{chunk.source_file}#{chunk.ordinal}",  # f-string = C# $"..."
+                    "_id": f"{chunk.source_file}#{chunk.ordinal}",
                     "source_file": chunk.source_file,
                     "ordinal": chunk.ordinal,
                     "content": chunk.content,
                     "embedding": embedding,
                 }
-                for chunk, embedding in chunks  # tuple unpacking in the loop head
+                for chunk, embedding in chunks
             ),
         )
         # Make the documents searchable immediately (ES refreshes every ~1s
-        # by default; tests and CLIs want it now).
+        # by default; a CLI wants it now).
         self._client.indices.refresh(index=INDEX_NAME)
 
     def list_all(self) -> list[dict]:
         """Return every stored chunk document, embeddings included.
 
-        match_all is Elasticsearch's "SELECT *". We return the raw _source
-        dicts here (not dataclasses) because this is a debugging view —
-        we want to see exactly what the index stores.
+        Returns the raw _source dicts because this is a debugging view — we
+        want to see exactly what the index stores.
         """
         response = self._client.search(
             index=INDEX_NAME,
@@ -101,9 +83,59 @@ class SearchIndex:
             query={"match_all": {}},
         )
         docs = [hit["_source"] for hit in response["hits"]["hits"]]
-        # Sort by (file, ordinal). A tuple as the sort key is the Python
-        # idiom for OrderBy(...).ThenBy(...) in LINQ.
         return sorted(docs, key=lambda d: (d["source_file"], d["ordinal"]))
+
+    def _bm25(self, query: str, size: int) -> list[dict]:
+        """Keyword branch — "match" runs BM25 scoring."""
+        response = self._client.search(
+            index=INDEX_NAME,
+            size=size,
+            query={"match": {"content": query}},
+        )
+        return response["hits"]["hits"]
+
+    def _knn(self, query: str, size: int) -> list[dict]:
+        """Vector branch — approximate nearest-neighbour over the embeddings.
+
+        num_candidates > k trades speed for recall inside each shard.
+        """
+        response = self._client.search(
+            index=INDEX_NAME,
+            size=size,
+            knn={
+                "field": "embedding",
+                "query_vector": self._embedder.embed(query),
+                "k": size,
+                "num_candidates": 100,
+            },
+        )
+        return response["hits"]["hits"]
+
+    def search(self, query: str, mode: str = "hybrid", top_n: int = 5) -> list[ScoredChunk]:
+        """Retrieve top chunks using one of MODES.
+
+        For "bm25" and "knn" the score is the branch's native score (BM25 /
+        cosine similarity mapped by ES), so scores are NOT comparable across
+        modes — only the ranking is.
+        """
+        if mode == "bm25":
+            hits = self._bm25(query, top_n)
+        elif mode == "knn":
+            hits = self._knn(query, top_n)
+        elif mode == "hybrid":
+            return self.hybrid_search(query, top_n)
+        else:
+            raise ValueError(f"Unknown mode '{mode}', expected one of {MODES}")
+
+        return [
+            ScoredChunk(
+                source_file=hit["_source"]["source_file"],
+                ordinal=hit["_source"]["ordinal"],
+                content=hit["_source"]["content"],
+                score=hit["_score"],
+            )
+            for hit in hits
+        ]
 
     def hybrid_search(self, query: str, top_n: int = 5) -> list[ScoredChunk]:
         """BM25 + kNN, fused with Reciprocal Rank Fusion.
@@ -117,37 +149,17 @@ class SearchIndex:
         cosine similarities live on completely different scales.
         """
         per_branch = 20
-        query_vector = self._embedder.embed(query)
+        bm25 = self._bm25(query, per_branch)
+        knn = self._knn(query, per_branch)
 
-        # Branch 1 — classic keyword search ("match" runs BM25 scoring).
-        bm25 = self._client.search(
-            index=INDEX_NAME,
-            size=per_branch,
-            query={"match": {"content": query}},
-        )
-
-        # Branch 2 — approximate nearest-neighbour search over the vectors.
-        # num_candidates > k trades speed for recall inside each shard.
-        knn = self._client.search(
-            index=INDEX_NAME,
-            size=per_branch,
-            knn={
-                "field": "embedding",
-                "query_vector": query_vector,
-                "k": per_branch,
-                "num_candidates": 100,
-            },
-        )
-
-        # --- Reciprocal Rank Fusion -------------------------------------
+        # Reciprocal Rank Fusion:
         # score(doc) = sum over each ranking of 1 / (RRF_K + rank)
         # A doc ranked #1 in both lists gets 2/(60+1); a doc ranked #1 in
         # one list and absent from the other gets 1/61 — so agreement wins.
         fused: dict[str, tuple[dict, float]] = {}   # doc_id -> (source doc, score)
 
-        for response in (bm25, knn):
-            # The response is a dict mirroring ES JSON: hits.hits[]._source
-            for rank, hit in enumerate(response["hits"]["hits"], start=1):
+        for ranking in (bm25, knn):
+            for rank, hit in enumerate(ranking, start=1):
                 doc_id = hit["_id"]
                 contribution = 1.0 / (RRF_K + rank)
                 if doc_id in fused:
@@ -156,8 +168,6 @@ class SearchIndex:
                 else:
                     fused[doc_id] = (hit["_source"], contribution)
 
-        # sorted(..., key=lambda ...) is Python's OrderByDescending;
-        # [:top_n] slices the first N items (like .Take(top_n)).
         top = sorted(fused.values(), key=lambda pair: pair[1], reverse=True)[:top_n]
 
         return [
