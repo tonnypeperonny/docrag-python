@@ -10,6 +10,7 @@ Usage:
     python main.py search [--mode hybrid|bm25|knn] [--top N] which days can I work from home
     python main.py ask [--mode ...] [--top N] what is the training budget and does it roll over
     python main.py eval [--mode ...] [--k N]     score retrieval against evalset.jsonl
+    python main.py answer-eval [--top N]         score generated answers against answerset.jsonl
     python main.py chunks [--full]               inspect stored chunks + embeddings
 
 Experiment knobs:
@@ -31,6 +32,7 @@ from pathlib import Path
 from elasticsearch import Elasticsearch
 
 import chunker
+from answer_eval import evaluate_answers, print_answer_report
 from embedding_service import EmbeddingService
 from eval_retrieval import evaluate, print_report
 from ollama_service import MODEL, OllamaAnswerService
@@ -104,6 +106,12 @@ def cmd_eval(index: SearchIndex, mode: str | None, k: int) -> None:
     print_report([evaluate(index, m, k=k) for m in modes])
 
 
+def cmd_answer_eval(index: SearchIndex, mode: str, top_n: int) -> None:
+    """Score end-to-end answers (retrieve + generate) against answerset.jsonl."""
+    outcomes = evaluate_answers(index, OllamaAnswerService(), top_n=top_n, mode=mode)
+    print_answer_report(outcomes, top_n=top_n, mode=mode)
+
+
 def cmd_chunks(index: SearchIndex, full: bool) -> None:
     """Inspect what ingestion actually stored — chunk text AND embedding.
 
@@ -141,9 +149,9 @@ def main() -> int:
         print(f"Unknown --mode '{mode}', expected one of {MODES}")
         return 1
 
-    # `chunks` and `eval` need no argument, every other command does.
+    # `chunks`, `eval` and `answer-eval` need no argument, every other command does.
     command = args[0].lower() if args else ""
-    if not command or (len(args) < 2 and command not in ("chunks", "eval")):
+    if not command or (len(args) < 2 and command not in ("chunks", "eval", "answer-eval")):
         print(__doc__)  # the module docstring doubles as help text
         return 1
 
@@ -166,6 +174,9 @@ def main() -> int:
             return cmd_ask(index, argument, mode=mode or "hybrid", top_n=int(top or 5))
         case "eval":
             cmd_eval(index, mode, k=int(k or 3))
+            return 0
+        case "answer-eval":
+            cmd_answer_eval(index, mode=mode or "hybrid", top_n=int(top or 5))
             return 0
         case "chunks":
             cmd_chunks(index, full=full)

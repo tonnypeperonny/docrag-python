@@ -17,6 +17,7 @@ no API keys, nothing leaves the box.
 | `search_index.py` | ES index, bulk ingest, BM25 + kNN + RRF |
 | `ollama_service.py` | Grounded answering via a local model on Ollama |
 | `eval_retrieval.py` + `evalset.jsonl` | Retrieval quality eval (hit@k, MRR) |
+| `answer_eval.py` + `answerset.jsonl` | End-to-end answer accuracy (gold-fact recall) |
 | `main.py` | CLI entry point |
 
 ## Setup & usage
@@ -42,10 +43,13 @@ same algorithm, so both produce identical rankings for the same query.
 Retrieval is tunable per run: `--mode hybrid|bm25|knn` and `--top N` on
 `search`/`ask`, `--chunk N` and `--no-overlap` on `ingest`. `eval` scores all
 modes against the labelled questions in `evalset.jsonl` (hit@k and MRR, split
-into keyword vs paraphrase questions):
+into keyword vs paraphrase questions). `answer-eval` goes one step further and
+scores the generated answers themselves against gold facts in `answerset.jsonl`
+— retrieval accuracy caps answer accuracy but doesn't guarantee it:
 
 ```powershell
 .\.venv\Scripts\python main.py eval
+.\.venv\Scripts\python main.py answer-eval
 .\.venv\Scripts\python main.py search --mode knn when will I get my money back
 ```
 

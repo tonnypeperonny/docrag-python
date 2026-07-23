@@ -1,0 +1,13 @@
+{"question": "what is the training budget and does it roll over", "kind": "single", "facts": [["4000"], ["not roll over", "does not roll over", "doesn't roll over", "no rollover", "not carry over", "does not carry"]]}
+{"question": "which purchases need pre-approval", "kind": "single", "facts": [["1000"], ["department head"]]}
+{"question": "what messaging technology does Project Atlas use", "kind": "single", "facts": [["service bus"]]}
+{"question": "what is the nightly hotel limit", "kind": "single", "facts": [["500"]]}
+{"question": "how many written quotes are needed for a purchase over 10000 PLN", "kind": "single", "facts": [["three", "3"]]}
+{"question": "what event streaming service does Project Beacon use", "kind": "single", "facts": [["kinesis"]]}
+{"question": "how often are laptops replaced", "kind": "single", "facts": [["three year", "3 year", "every three", "every 3"]]}
+{"question": "what is the home office budget", "kind": "single", "facts": [["2000"]]}
+{"question": "how often are passwords rotated", "kind": "single", "facts": [["180"]]}
+{"question": "what is the target billing latency for Project Atlas", "kind": "single", "facts": [["400"]]}
+{"question": "how much can I spend on meals", "kind": "multi", "facts": [["200"], ["150"]]}
+{"question": "I want to book a business trip costing 6000 PLN and also buy a 12000 PLN software license — what approvals do I need for each", "kind": "multi", "facts": [["director"], ["architecture", "three", "3 ", "quotes"]]}
+{"question": "what is the parental leave policy", "kind": "single", "facts": [], "must_refuse": true}

@@ -159,12 +159,45 @@ retrieval-presentation problem (surface and label both facts) more than a
 model-size one. Next lever to try is multi-source questions where the answer
 *must* combine two chunks.
 
+## 6. Automated answer accuracy
+
+Scenarios 4 and 5 judged answers by eye. This measures them: `answer-eval`
+runs the full pipeline per question and checks the generated answer against
+gold facts in `answerset.jsonl` (13 questions). A question passes only if the
+answer contains every required fact (numbers matched comma-insensitively, so
+"4,000" == "4000"); the parental-leave question passes only if the model
+declines instead of inventing an answer. Matching is normalized substring —
+crude, so read the printed failures, not just the number.
+
+```powershell
+.\.venv\Scripts\python main.py answer-eval
+$env:DOCRAG_LLM_MODEL = "qwen2.5:7b"; .\.venv\Scripts\python main.py answer-eval
+```
+
+| model       | overall     | single-fact | multi-source |
+|-------------|-------------|-------------|--------------|
+| llama3.2:3b | 0.92 (12/13)| 1.00 (11/11)| 0.50 (1/2)   |
+| qwen2.5:7b  | 0.92 (12/13)| 1.00 (11/11)| 0.50 (1/2)   |
+
+The two models are identical, including *which* question they miss and *how*:
+"how much can I spend on meals" — both answer only the 200 PLN client-meal
+limit and drop the 150 PLN travel per diem. Crucially the per-diem chunk *was*
+retrieved (rank 3 at top 5), so this is a generation-completeness gap, not a
+retrieval miss, and the 7B doesn't close it. The refusal question passes for
+both — the automated check confirms neither invents a parental-leave policy.
+
+This puts a number on the scenario-5 finding: on single-fact questions the 3B
+is already at ceiling (so the 7B has nothing to fix), and on the one question
+with two valid answers, size doesn't help. The lever that would move
+multi-source is prompting/formatting the model to enumerate every relevant
+source, not a bigger model.
+
 ## Backlog / ideas
 
-- Add multi-source questions (answer requires combining two docs) and measure
-  whether depth (scenario 4) and model size (scenario 5) finally separate.
+- Add more multi-source questions (the answer set has only two) and test
+  whether a "list every applicable rule" system prompt lifts multi from 0.50.
 - Sweep RRF k (currently 60) now that the branches disagree — does it move the
   hybrid rankings at all?
-- Mirror the eval harness in the .NET version and confirm rankings match.
+- Mirror both eval harnesses in the .NET version and confirm rankings match.
 - Add a few more near-duplicate distractors (e.g. a second expense-style
   policy) to push bm25/kNN hit@3 further apart.
