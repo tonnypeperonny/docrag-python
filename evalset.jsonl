@@ -10,5 +10,14 @@
 {"question": "when will I get my money back for a business trip", "expected_file": "expenses-policy.md", "kind": "paraphrase"}
 {"question": "what messaging technology does Project Atlas use", "expected_file": "project-atlas-brief.md", "kind": "keyword"}
 {"question": "what happens in phase 2 of Atlas", "expected_file": "project-atlas-brief.md", "kind": "keyword"}
-{"question": "who maintains the ADRs", "expected_file": "project-atlas-brief.md", "kind": "keyword"}
+{"question": "who maintains the ADRs for Project Atlas", "expected_file": "project-atlas-brief.md", "kind": "keyword"}
 {"question": "what is the target latency for billing after the migration", "expected_file": "project-atlas-brief.md", "kind": "paraphrase"}
+{"question": "how do I book a flight for a business trip", "expected_file": "travel-booking-policy.md", "kind": "paraphrase"}
+{"question": "what is the nightly hotel limit", "expected_file": "travel-booking-policy.md", "kind": "keyword"}
+{"question": "how many quotes do I need for a large purchase", "expected_file": "procurement-policy.md", "kind": "paraphrase"}
+{"question": "how do I raise a purchase order", "expected_file": "procurement-policy.md", "kind": "keyword"}
+{"question": "what event streaming service does Project Beacon use", "expected_file": "project-beacon-brief.md", "kind": "keyword"}
+{"question": "which cloud does Beacon run on", "expected_file": "project-beacon-brief.md", "kind": "paraphrase"}
+{"question": "how often are passwords rotated", "expected_file": "information-security-policy.md", "kind": "keyword"}
+{"question": "who do I tell if I get a suspicious phishing email", "expected_file": "information-security-policy.md", "kind": "paraphrase"}
+{"question": "how often are laptops replaced", "expected_file": "it-equipment-policy.md", "kind": "keyword"}

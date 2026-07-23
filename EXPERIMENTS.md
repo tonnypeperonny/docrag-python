@@ -5,39 +5,62 @@ Scenario log for tuning retrieval on the sample corpus. Metrics come from
 keyword vs paraphrase questions). Re-run `ingest` between chunking scenarios —
 the index only holds one chunking configuration at a time.
 
-Results below: 2026-07-13, Elasticsearch 9.1.4, all-MiniLM-L6-v2, 14-question
-evalset (8 keyword / 6 paraphrase), answers via llama3.2:3b on Ollama.
+Results below: 2026-07-23, Elasticsearch 9.1.4, all-MiniLM-L6-v2, 23-question
+evalset (13 keyword / 10 paraphrase), answers via llama3.2:3b on Ollama.
 Everything runs locally — no hosted APIs.
+
+## Corpus
+
+Eight documents. Three carry the labelled answers (expenses-policy,
+remote-work-policy, project-atlas-brief); the other five are distractors
+added on purpose so retrieval has real competition instead of three docs on
+three disjoint topics:
+
+- `travel-booking-policy` — shares travel / hotel / meal / PLN / approval
+  vocabulary with the expense policy.
+- `procurement-policy` — shares purchase / pre-approval / software-license
+  vocabulary with the expense policy.
+- `project-beacon-brief` — a second cloud-migration brief (AWS/Kinesis vs
+  Atlas's Azure/Service Bus); competes with every Atlas question.
+- `information-security-policy` — shares confidential-data / device wording
+  with the remote-work security section.
+- `it-equipment-policy` — shares laptop / monitor / service-desk wording with
+  the remote-work equipment section.
+
+Each distractor is written to be lexically close but to *not* contain the
+specific fact any labelled question asks for, so the labels stay
+unambiguous while the retriever has to discriminate.
 
 ## 1. Retrieval mode: hybrid vs BM25-only vs kNN-only
 
 Does RRF fusion actually beat either branch alone, and where does each
-branch fail? Expectation: BM25 wins keyword questions (e.g. "ADRs"),
-kNN wins paraphrase questions, hybrid is the best overall.
+branch fail? Expectation: BM25 wins keyword questions, kNN wins paraphrase
+questions, hybrid is the best overall.
 
 ```powershell
 .\.venv\Scripts\python main.py ingest sample-docs
-.\.venv\Scripts\python main.py eval
+.\.venv\Scripts\python main.py eval --mode hybrid   # then --mode bm25, --mode knn
 ```
 
-| mode   | hit@3 | MRR   | keyword MRR | paraphrase MRR | notes |
-|--------|-------|-------|-------------|----------------|-------|
-| hybrid | 1.00  | 0.964 | 1.000       | 0.917          | inherits bm25's one paraphrase rank-2 |
-| bm25   | 1.00  | 0.964 | 1.000       | 0.917          | drops on paraphrase, as expected |
-| knn    | 1.00  | 0.964 | 0.938       | 1.000          | drops on keyword, as expected |
+Default chunking (1200 chars → 8 chunks, one per doc):
 
-At default chunking the corpus is only 3 chunks (each doc fits in one chunk),
-so hit@3 is saturated and only MRR differentiates. The branches fail exactly
-where predicted — bm25 on paraphrase, knn on keyword — and mirror each other.
-The mode differences get much clearer at 400-char chunking (11 chunks): there
-bm25 paraphrase MRR falls to 0.806 while knn holds 1.000, and hybrid stays at
-1.000 everywhere — fusion genuinely rescues bm25's paraphrase misses.
-Real conclusion: 3 docs is too small; need distractor docs (see backlog).
+| mode   | hit@3 | MRR   | keyword MRR | paraphrase MRR | misses |
+|--------|-------|-------|-------------|----------------|--------|
+| hybrid | 1.00  | 0.906 | 0.962       | 0.833          | none |
+| bm25   | 0.96  | 0.891 | 0.923       | 0.850          | "nightly hotel limit" (keyword) |
+| knn    | 0.91  | 0.841 | 0.885       | 0.783          | "receipt hand-in", "purchases pre-approval" |
+
+With the distractors in, the branches now genuinely diverge — hit@3 is no
+longer pinned at 1.00. Hybrid is the only mode that retrieves every answer in
+the top 3; bm25 loses "nightly hotel limit" (the expense policy's meal/travel
+lines out-score the travel policy on the shared tokens), and kNN drops two
+where the wording is close across docs. Fusion is worth it precisely because
+the two branches fail on different questions.
 
 ## 2. Chunk size sweep
 
 Smaller chunks = more precise retrieval but less context per chunk for the
-LLM; larger chunks = the opposite. Where is the sweet spot for these docs?
+LLM; larger chunks = the opposite. Where is the sweet spot? (hybrid mode)
 
 ```powershell
 .\.venv\Scripts\python main.py ingest sample-docs --chunk 400
@@ -47,87 +70,101 @@ LLM; larger chunks = the opposite. Where is the sweet spot for these docs?
 
 | chunk size | chunks indexed | hit@3 | MRR   | notes |
 |------------|----------------|-------|-------|-------|
-| 400        | 11             | 1.00  | 1.000 | best — one section ≈ one chunk |
-| 800        | 6              | 1.00  | 1.000 |       |
-| 1200       | 3              | 1.00  | 0.964 | whole doc = one chunk |
-| 2400       | 3              | 1.00  | 0.964 | identical to 1200 — docs already fit |
+| 400        | 28             | 1.00  | 0.928 | best — one section ≈ one chunk |
+| 800        | 16             | 0.96  | 0.906 | loses "nightly hotel limit" |
+| 1200       | 8              | 1.00  | 0.906 | whole doc = one chunk |
+| 2400       | 8              | 1.00  | 0.906 | identical to 1200 — docs already fit |
 
-Smaller chunks win here (hybrid mode): at 400 chars each policy section is
-its own chunk, so the right chunk ranks #1 instead of competing inside a
-whole-document blob. 2400 changes nothing vs 1200 because every sample doc is
-already under 1200 chars of paragraphs — the sweep needs longer docs to say
-anything about the upper end.
+400 is still the best config, and the reason is clearer now: at 400 chars
+each policy section is its own chunk, so a distractor doc only competes on
+the one section that overlaps rather than pulling its whole-document blob into
+contention. 800 is the odd one out — merging two sections per chunk is enough
+to let the expense policy's travel line beat the travel policy on "hotel
+limit". 2400 changes nothing vs 1200 because every sample doc is already under
+1200 chars of paragraphs.
 
 ## 3. Overlap on vs off
 
 Overlap exists to keep boundary-straddling facts retrievable. Does removing
-it measurably hurt on this corpus, or is it only visible on bigger docs?
+it measurably hurt? (400 chars, hybrid)
 
 ```powershell
 .\.venv\Scripts\python main.py ingest sample-docs --chunk 400 --no-overlap
 .\.venv\Scripts\python main.py eval --mode hybrid
 ```
 
-| config              | chunks indexed | hit@3 | MRR   | notes |
-|---------------------|----------------|-------|-------|-------|
-| 400 + overlap       | 11             | 1.00  | 1.000 |       |
-| 400 no overlap      | 9              | 1.00  | 0.929 | paraphrase MRR 1.000 → 0.833 |
+| config          | chunks indexed | hit@3 | MRR   | paraphrase MRR |
+|-----------------|----------------|-------|-------|----------------|
+| 400 + overlap   | 28             | 1.00  | 0.928 | 0.900 |
+| 400 no overlap  | 26             | 1.00  | 0.906 | 0.850 |
 
-Measurable even on this tiny corpus: without the carried-over paragraph, two
-paraphrase questions slip from rank 1 to rank 2 (the answering fact sits at a
-section boundary and its chunk loses context that helped the embedding).
-Overlap costs 2 extra chunks and buys a cleaner top rank — keep it on.
+hit@3 is unchanged, but overlap still buys a cleaner top rank on paraphrase
+questions (0.900 vs 0.850): without the carried-over paragraph, a couple of
+answers whose fact sits at a section boundary slip from rank 1 to rank 2.
+Two extra chunks for a measurably better MRR — keep it on.
 
 ## 4. Retrieval depth for answering (`--top`)
 
 More retrieved chunks = more chances the answer is in context, but more
-noise and tokens. Compare answer quality by eye on a few questions:
+noise and tokens. Compare answer quality by eye (llama3.2:3b, 400-char index):
 
 ```powershell
 .\.venv\Scripts\python main.py ask --top 2 what is the training budget and does it roll over
 .\.venv\Scripts\python main.py ask --top 8 what is the training budget and does it roll over
 ```
 
-Notes (llama3.2:3b, 400-char index, 11 chunks):
-
-- `--top 2`: both retrieved chunks were from expenses-policy.md; answer
-  correct (4,000 PLN, no rollover) with citations [1][2].
-- `--top 8`: 6 of the 8 chunks were noise from the other two docs; the model
-  still ignored them, cited only [1], and answered correctly.
-- On this corpus extra depth is pure token cost with no quality gain — but
-  that's with one distractor doc pair; retest after adding distractors.
+- `--top 2`: chunks were expenses#2 and a travel-policy distractor; answer
+  correct (4,000 PLN, no rollover), cited [1] and [2].
+- `--top 8`: 6 of 8 chunks were distractors (travel, procurement, IT
+  equipment, remote-work); the model ignored all of them, cited only [1], and
+  answered correctly.
+- Even with real noise in the window now, extra depth is still pure token cost
+  on this corpus — the answer lives in one chunk and the model finds it. Depth
+  would only pay off on questions that need to combine facts from two docs.
 
 ## 5. Answer model: small vs bigger local model
 
 Same retrieval, different generator — does a 3B model respect "answer only
-from the sources, cite them", and does stepping up to a 7B improve grounding?
+from the sources, cite them", and does a 7B improve grounding once distractor
+chunks are actually landing in the context window?
 
 ```powershell
 .\.venv\Scripts\python main.py ask which purchases need pre-approval
-ollama pull qwen2.5:7b
 $env:DOCRAG_LLM_MODEL = "qwen2.5:7b"; .\.venv\Scripts\python main.py ask which purchases need pre-approval
 ```
 
-Notes:
+Single-fact questions, with distractor chunks present in the retrieved set:
 
-- llama3.2:3b: correct answer ("above 1,000 PLN, department head"), named
-  the source file and cited [1]. On these short, unambiguous policy
-  questions the 3B model has been reliable so far — no hallucination
-  observed yet.
-- qwen2.5:7b: also correct and cited; noticeably more concise (one sentence
-  vs llama's restated bullet lists on other questions).
-- Answer-not-present test ("what is the parental leave policy" — not in any
-  doc): BOTH models correctly said the sources don't contain it, no
-  invention. llama padded with a summary of what the sources do cover; qwen
-  answered in one line.
-- Verdict so far: on this small, clean corpus the 3B model is not the weak
-  link — retrieval quality dominates. Revisit after adding distractor docs
-  and multi-source questions; that's where the 7B should separate.
+- "Atlas messaging technology" — retrieved set included the Beacon brief
+  (Kinesis) at [3]. Both llama3.2:3b and qwen2.5:7b answered Azure Service Bus
+  and cited [1]; neither was pulled toward the wrong project.
+- "which purchases need pre-approval" — retrieved set included the procurement
+  policy at [2]. Both models gave the expense-policy answer (above 1,000 PLN,
+  department head) and cited [1]. qwen was a touch more concise, same content.
+
+Where they both fall short — a genuinely ambiguous question spanning two docs:
+
+- "how much can I spend on meals" — retrieval pulled *both* the expense
+  policy's client-meal limit (200 PLN, [1]) and the travel policy's meal per
+  diem (150 PLN, [3]). Both models answered only the top-ranked one (200 PLN
+  client meals) and silently dropped the per diem. Neither conflated the two
+  numbers (no "150–200 PLN" hallucination), but neither surfaced that there
+  are two different meal allowances.
+
+Verdict: with distractors landing in context, the 3B model still holds its
+grounding on single-fact questions — it doesn't get distracted, so the 7B has
+nothing to fix there. The real gap is completeness on questions with more than
+one valid answer, and the 7B doesn't close it either — that's a
+retrieval-presentation problem (surface and label both facts) more than a
+model-size one. Next lever to try is multi-source questions where the answer
+*must* combine two chunks.
 
 ## Backlog / ideas
 
-- Add distractor documents to the corpus so retrieval has real competition —
-  metrics on 3 files are too easy.
-- Add answer-not-present questions to test the "say so, don't invent" rule.
-- Sweep RRF k (currently 60) — does it matter at this corpus size?
+- Add multi-source questions (answer requires combining two docs) and measure
+  whether depth (scenario 4) and model size (scenario 5) finally separate.
+- Sweep RRF k (currently 60) now that the branches disagree — does it move the
+  hybrid rankings at all?
 - Mirror the eval harness in the .NET version and confirm rankings match.
+- Add a few more near-duplicate distractors (e.g. a second expense-style
+  policy) to push bm25/kNN hit@3 further apart.
