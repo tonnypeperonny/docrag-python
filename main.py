@@ -18,11 +18,16 @@ Experiment knobs:
     --top/--k   how many chunks to retrieve/judge (default 5 / 3)
     --chunk     target chunk size in chars at ingest time (default 1200)
     --no-overlap  disable paragraph overlap between chunks at ingest time
+    --decompose   split the question into sub-questions and retrieve for each
+                  (search, ask, answer-eval)
+    --enumerate   answer with the prompt that requires every applicable rule
+                  (ask, answer-eval)
 
 Environment:
-    ES_URL             Elasticsearch endpoint (default http://localhost:9200)
-    OLLAMA_URL         Ollama endpoint (default http://localhost:11434)
-    DOCRAG_LLM_MODEL   model name for `ask` (default llama3.2:3b)
+    ES_URL               Elasticsearch endpoint (default http://localhost:9200)
+    OLLAMA_URL           Ollama endpoint (default http://localhost:11434)
+    DOCRAG_LLM_MODEL     model name for `ask` (default llama3.2:3b)
+    DOCRAG_PLANNER_MODEL model name for --decompose (defaults to DOCRAG_LLM_MODEL)
 """
 
 import os
@@ -33,9 +38,11 @@ from elasticsearch import Elasticsearch
 
 import chunker
 from answer_eval import evaluate_answers, print_answer_report
+from decomposed_search import DecomposedRetrieval, search_decomposed
 from embedding_service import EmbeddingService
 from eval_retrieval import evaluate, print_report
-from ollama_service import MODEL, OllamaAnswerService
+from ollama_service import MODEL, SYSTEM_PROMPT_ENUMERATE, OllamaAnswerService
+from query_planner import PLANNER_MODEL, OllamaQueryPlanner
 from search_index import INDEX_NAME, MODES, SearchIndex
 
 
@@ -78,16 +85,48 @@ def cmd_ingest(index: SearchIndex, embedder: EmbeddingService, folder: str,
     print(f"Indexed {len(pairs)} chunk(s).")
 
 
-def cmd_search(index: SearchIndex, query: str, mode: str, top_n: int) -> None:
-    for i, result in enumerate(index.search(query, mode=mode, top_n=top_n), start=1):
+def retrieve(index: SearchIndex, question: str, mode: str, top_n: int, decompose: bool):
+    """One-shot retrieval, or plan -> retrieve per sub-question -> merge.
+
+    Returns (chunks, DecomposedRetrieval | None) — the second value is the
+    planner trace, and is None whenever --decompose was not asked for.
+    """
+    if not decompose:
+        return index.search(question, mode=mode, top_n=top_n), None
+
+    result = search_decomposed(index, OllamaQueryPlanner(), question, mode=mode, top_n=top_n)
+    return result.chunks, result
+
+
+def print_plan(result: DecomposedRetrieval) -> None:
+    """Show what the planner did and what each part of the question retrieved."""
+    count = len(result.sub_questions)
+    print(f"[planner {PLANNER_MODEL} -> {count} sub-question(s)]")
+    for sub, results in result.per_sub:
+        found = ", ".join(f"{c.source_file}#{c.ordinal}" for c in results) or "nothing"
+        print(f"  - {sub}")
+        print(f"      {found}")
+    print()
+
+
+def cmd_search(index: SearchIndex, query: str, mode: str, top_n: int, decompose: bool) -> None:
+    context, plan = retrieve(index, query, mode, top_n, decompose)
+    if plan is not None:
+        print_plan(plan)
+
+    for i, result in enumerate(context, start=1):
         print(f"--- #{i}  {mode}={result.score:.4f}  {result.source_file} (chunk {result.ordinal})")
         preview = result.content[:300] + "…" if len(result.content) > 300 else result.content
         print(preview)
         print()
 
 
-def cmd_ask(index: SearchIndex, question: str, mode: str, top_n: int) -> int:
-    context = index.search(question, mode=mode, top_n=top_n)
+def cmd_ask(index: SearchIndex, question: str, mode: str, top_n: int,
+            decompose: bool, enumerate_all: bool) -> int:
+    context, plan = retrieve(index, question, mode, top_n, decompose)
+    if plan is not None:
+        print_plan(plan)
+
     if not context:
         print("No indexed content matched the question. Run `python main.py ingest <folder>` first.")
         return 1
@@ -95,8 +134,9 @@ def cmd_ask(index: SearchIndex, question: str, mode: str, top_n: int) -> int:
     retrieved = ", ".join(f"{c.source_file}#{c.ordinal}" for c in context)
     print(f"Retrieved {len(context)} chunk(s): {retrieved}\n")
 
+    service = OllamaAnswerService(SYSTEM_PROMPT_ENUMERATE) if enumerate_all else OllamaAnswerService()
     print(f"[answering with local model {MODEL} via Ollama]\n")
-    print(OllamaAnswerService().ask(question, context))
+    print(service.ask(question, context))
     return 0
 
 
@@ -106,10 +146,21 @@ def cmd_eval(index: SearchIndex, mode: str | None, k: int) -> None:
     print_report([evaluate(index, m, k=k) for m in modes])
 
 
-def cmd_answer_eval(index: SearchIndex, mode: str, top_n: int) -> None:
-    """Score end-to-end answers (retrieve + generate) against answerset.jsonl."""
-    outcomes = evaluate_answers(index, OllamaAnswerService(), top_n=top_n, mode=mode)
-    print_answer_report(outcomes, top_n=top_n, mode=mode)
+def cmd_answer_eval(index: SearchIndex, mode: str, top_n: int,
+                    decompose: bool, enumerate_all: bool) -> None:
+    """Score end-to-end answers (retrieve + generate) against answerset.jsonl.
+
+    The two workflow flags are independent on purpose: --decompose changes what
+    reaches the context window, --enumerate changes what the model does with
+    it. Running them separately is what tells you which one earned the win.
+    """
+    service = OllamaAnswerService(SYSTEM_PROMPT_ENUMERATE) if enumerate_all else OllamaAnswerService()
+    workflow = "+".join(
+        [name for name, on in (("decompose", decompose), ("enumerate", enumerate_all)) if on]
+    ) or "one-shot"
+
+    outcomes = evaluate_answers(index, service, top_n=top_n, mode=mode, decompose=decompose)
+    print_answer_report(outcomes, top_n=top_n, mode=mode, workflow=workflow)
 
 
 def cmd_chunks(index: SearchIndex, full: bool) -> None:
@@ -144,6 +195,8 @@ def main() -> int:
     chunk_chars = pop_option(args, "--chunk")
     no_overlap = pop_switch(args, "--no-overlap")
     full = pop_switch(args, "--full")
+    decompose = pop_switch(args, "--decompose")
+    enumerate_all = pop_switch(args, "--enumerate")
 
     if mode is not None and mode not in MODES:
         print(f"Unknown --mode '{mode}', expected one of {MODES}")
@@ -168,15 +221,18 @@ def main() -> int:
                        overlap=not no_overlap)
             return 0
         case "search":
-            cmd_search(index, argument, mode=mode or "hybrid", top_n=int(top or 5))
+            cmd_search(index, argument, mode=mode or "hybrid", top_n=int(top or 5),
+                       decompose=decompose)
             return 0
         case "ask":
-            return cmd_ask(index, argument, mode=mode or "hybrid", top_n=int(top or 5))
+            return cmd_ask(index, argument, mode=mode or "hybrid", top_n=int(top or 5),
+                           decompose=decompose, enumerate_all=enumerate_all)
         case "eval":
             cmd_eval(index, mode, k=int(k or 3))
             return 0
         case "answer-eval":
-            cmd_answer_eval(index, mode=mode or "hybrid", top_n=int(top or 5))
+            cmd_answer_eval(index, mode=mode or "hybrid", top_n=int(top or 5),
+                            decompose=decompose, enumerate_all=enumerate_all)
             return 0
         case "chunks":
             cmd_chunks(index, full=full)
