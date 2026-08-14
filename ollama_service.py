@@ -22,8 +22,25 @@ numbered sources provided in the message. Cite sources inline as [1], [2], etc.
 If the sources do not contain the answer, say so explicitly — do not invent facts.
 """
 
+# Same grounding rules, plus an explicit completeness requirement. The default
+# prompt lets the model stop at the first matching rule, which is fine until a
+# question has two valid answers in two different documents (meal limits, say)
+# — then it reports the top-ranked one and silently drops the other.
+SYSTEM_PROMPT_ENUMERATE = """\
+You are a documentation assistant. Answer the user's question using ONLY the
+numbered sources provided in the message. Cite sources inline as [1], [2], etc.
+If the sources do not contain the answer, say so explicitly — do not invent facts.
+
+If more than one rule, limit or figure in the sources applies to the question,
+state EVERY one of them and say which situation each one covers. Never report
+only the first match, and never merge two different figures into a range.
+"""
+
 
 class OllamaAnswerService:
+    def __init__(self, system_prompt: str = SYSTEM_PROMPT) -> None:
+        self._system_prompt = system_prompt
+
     def ask(self, question: str, context: list[ScoredChunk]) -> str:
         sources = "\n\n".join(
             f"[{i}] (from {chunk.source_file})\n{chunk.content}"
@@ -35,8 +52,13 @@ class OllamaAnswerService:
             json={
                 "model": MODEL,
                 "stream": False,
+                # Greedy decoding, fixed seed. Sampling made `answer-eval` move
+                # by a question or two between identical runs, which is larger
+                # than most of the effects being measured — an A/B you cannot
+                # reproduce is not a measurement.
+                "options": {"temperature": 0, "seed": 0},
                 "messages": [
-                    {"role": "system", "content": SYSTEM_PROMPT},
+                    {"role": "system", "content": self._system_prompt},
                     {
                         "role": "user",
                         "content": f"Sources:\n\n{sources}\n\nQuestion: {question}",
