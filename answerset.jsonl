@@ -10,4 +10,8 @@
 {"question": "what is the target billing latency for Project Atlas", "kind": "single", "facts": [["400"]]}
 {"question": "how much can I spend on meals", "kind": "multi", "facts": [["200"], ["150"]]}
 {"question": "I want to book a business trip costing 6000 PLN and also buy a 12000 PLN software license — what approvals do I need for each", "kind": "multi", "facts": [["director"], ["architecture", "three", "3 ", "quotes"]]}
+{"question": "what are the latency targets for Project Atlas and Project Beacon", "kind": "multi", "facts": [["400"], ["250"]]}
+{"question": "I am setting up to work from home — what is the home office budget and how often is the laptop replaced", "kind": "multi", "facts": [["2000"], ["three year", "3 year", "every three", "every 3"]]}
+{"question": "what is the nightly hotel cap in Poland and how long do I have to submit the receipt", "kind": "multi", "facts": [["500"], ["30 day"]]}
+{"question": "which cloud provider and which messaging or streaming service does each migration project use", "kind": "multi", "facts": [["azure"], ["service bus"], ["aws"], ["kinesis"]]}
 {"question": "what is the parental leave policy", "kind": "single", "facts": [], "must_refuse": true}
