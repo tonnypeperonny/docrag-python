@@ -7,6 +7,10 @@ version in `D:\proj\docrag-dotnet`. Both share the same pipeline:
     search:  BM25 + kNN in parallel -> Reciprocal Rank Fusion -> top chunks
     ask:     top chunks + question -> local LLM via Ollama -> cited answer
 
+Optionally the question is planned before it is searched:
+
+    plan:    question -> LLM -> sub-questions -> one search each -> merge
+
 Fully local: embeddings, search, and answering all run on this machine —
 no API keys, nothing leaves the box.
 
@@ -16,6 +20,8 @@ no API keys, nothing leaves the box.
 | `embedding_service.py` | all-MiniLM-L6-v2 embeddings (384 dims) |
 | `search_index.py` | ES index, bulk ingest, BM25 + kNN + RRF |
 | `ollama_service.py` | Grounded answering via a local model on Ollama |
+| `query_planner.py` | Splits a question into sub-questions (a second LLM call) |
+| `decomposed_search.py` | Retrieves per sub-question and merges round-robin |
 | `eval_retrieval.py` + `evalset.jsonl` | Retrieval quality eval (hit@k, MRR) |
 | `answer_eval.py` + `answerset.jsonl` | End-to-end answer accuracy (gold-fact recall) |
 | `main.py` | CLI entry point |
@@ -51,6 +57,18 @@ scores the generated answers themselves against gold facts in `answerset.jsonl`
 .\.venv\Scripts\python main.py eval
 .\.venv\Scripts\python main.py answer-eval
 .\.venv\Scripts\python main.py search --mode knn when will I get my money back
+```
+
+Two more flags change the workflow rather than the retrieval parameters:
+`--decompose` plans the question into sub-questions and searches for each,
+`--enumerate` swaps in a system prompt that demands every applicable rule. They
+are separate switches so each can be measured on its own — `answer-eval` takes
+both and reports how many questions the planner actually split, which is the
+cost side of the trade:
+
+```powershell
+.\.venv\Scripts\python main.py search --decompose what are the latency targets for Project Atlas and Project Beacon
+.\.venv\Scripts\python main.py answer-eval --decompose --enumerate
 ```
 
 Scenarios and results are tracked in [EXPERIMENTS.md](EXPERIMENTS.md).
